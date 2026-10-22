@@ -10,31 +10,34 @@
 const char* WIFI_SSID     = "MCS-Guest";
 const char* WIFI_PASSWORD = "";
 
-const char* API_URL       = "https://storage.googleapis.com/mcs-bell-api/schedule.json";
+const char* API_URL       = "https://ricec-at-masonhs.github.io/bell-schedule-mock/schedule.json";
 const char* TARGET_BLDG   = "MHS"; // "MHS" or "MMS"
 const char* TIMEZONE_TZ   = "EST5EDT,M3.2.0,M11.1.0"; // America/New_York
 
 #define NEOPIXEL_PIN      32    // GPIO32 / D32 on ESP32
-#define NUM_LEDS          8     // 8 physical LEDs total
+#define NUM_LEDS          12    // 12-LED RGBW Ring
 // ======================================================
 
-Adafruit_NeoPixel strip(NUM_LEDS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip(NUM_LEDS, NEOPIXEL_PIN, NEO_GRBW + NEO_KHZ800);
 
-const int STATUS_LED_INDEX = 0; // Index 0 (LED 1) = Connect / Status
+// LED Mapping:
+// Indices 0..7 (LEDs 1..8)  = Connect/CREW (0) and Bells 1..7 (1..7)
+// Indices 8..10 (LEDs 9..11) = Unused / Held OFF
+// Index 11 (LED 12)          = Permanent System Status Indicator
+const int STATUS_LED_INDEX = 11; 
 
-// ================= COLOR PALETTE ======================
-// Bell States
-const uint32_t COLOR_OFF          = strip.Color(0, 0, 0);
-const uint32_t COLOR_BELL_PAST     = strip.Color(10, 18, 26);  // Dim Slate (#2A3D4C scaled down)
-const uint32_t COLOR_BELL_ACTIVE   = strip.Color(76, 187, 23);  // Kelly Green (#4CBB17)
-const uint32_t COLOR_BELL_FUTURE   = strip.Color(31, 183, 229); // Electric Cyan (#1FB7E5)
-const uint32_t COLOR_BREATH_GREEN  = strip.Color(0, 138, 0);   // Deep Green (#008A00)
+// ================= COLOR PALETTE (RGBW) ======================
+const uint32_t COLOR_OFF          = strip.Color(0, 0, 0, 0);
+const uint32_t COLOR_BELL_PAST     = strip.Color(0, 0, 0, 15);   // Soft Dedicated White
+const uint32_t COLOR_BELL_ACTIVE   = strip.Color(76, 187, 23, 0); // Kelly Green (#4CBB17)
+const uint32_t COLOR_BELL_FUTURE   = strip.Color(31, 183, 229, 0);// Electric Cyan (#1FB7E5)
+const uint32_t COLOR_STATUS_HEALTHY= strip.Color(0, 138, 0, 0);  // Deep Green (#008A00)
 
-// System Error Overlays (Applied to LED 1)
-const uint32_t COLOR_ERR_WIFI     = strip.Color(255, 0, 0);    // Red (WiFi disconnect)
-const uint32_t COLOR_ERR_NTP      = strip.Color(0, 255, 255);  // Electric Cyan (NTP Fail)
-const uint32_t COLOR_ERR_API_NET  = strip.Color(255, 0, 255);  // Magenta (API Unreachable / Empty)
-const uint32_t COLOR_ERR_API_DATE = strip.Color(255, 80, 0);   // Amber (API Wrong Date / Stale Data)
+// System Error Overlays (Applied to LED 12 / Index 11)
+const uint32_t COLOR_ERR_WIFI     = strip.Color(255, 0, 0, 0);   // Red (WiFi disconnect)
+const uint32_t COLOR_ERR_NTP      = strip.Color(0, 255, 255, 0); // Electric Cyan (NTP Fail)
+const uint32_t COLOR_ERR_API_NET  = strip.Color(255, 0, 255, 0); // Magenta (API Unreachable / Bad Response)
+const uint32_t COLOR_ERR_API_DATE = strip.Color(255, 80, 0, 0);  // Amber (API Stale Date)
 // ======================================================
 
 struct BellInfo {
@@ -43,7 +46,7 @@ struct BellInfo {
   long end_epoch    = 0;
 };
 
-BellInfo bells[8]; 
+BellInfo bells[8]; // Index 0 = Connect, Indices 1..7 = Bells 1..7
 
 bool is_school_day  = false;
 bool ntp_synced     = false;
@@ -129,7 +132,7 @@ bool fetchSchedule() {
     if (httpCode == HTTP_CODE_OK) {
       String payload = http.getString();
 
-      // Sanitize Payload (Strip leading BOM / trailing whitespace)
+      // Sanitize Payload (Strip BOM & trailing characters)
       int firstBrace = payload.indexOf('{');
       int lastBrace  = payload.lastIndexOf('}');
       if (firstBrace != -1 && lastBrace > firstBrace) {
@@ -148,9 +151,9 @@ bool fetchSchedule() {
       DeserializationError error = deserializeJson(doc, payload);
 
       if (!error) {
-        api_net_ok = true; // Network & JSON structure valid
+        api_net_ok = true;
 
-        // --- DATE VALIDATION CHECK ---
+        // Date Validation Check
         time_t now_epoch;
         time(&now_epoch);
         struct tm timeinfo;
@@ -242,7 +245,7 @@ void setup() {
   Serial.begin(115200);
 
   strip.begin();
-  strip.setBrightness(40);
+  strip.setBrightness(50);
   strip.show();
 
   connectWiFi();
@@ -313,15 +316,20 @@ void loop() {
   }
 
   // 5. Render LED States
-  bool blink_state = (millis() / 500) % 2 == 0; // Toggles every 500ms
+  bool blink_state = (millis() / 500) % 2 == 0;
 
-  // --- RENDER PERIOD LEDs (Index 0 = LED 1, Index 1..7 = LEDs 2..8) ---
+  // Clear entire ring first (ensures unused ring LEDs 8..10 stay off)
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, COLOR_OFF);
+  }
+
+  // --- RENDER PERIOD LEDs (Indices 0..7 = LEDs 1..8) ---
   for (int i = 0; i < 8; i++) {
     if (!bells[i].is_scheduled) {
       strip.setPixelColor(i, COLOR_OFF);
     } 
     else if (i == active_bell) {
-      strip.setPixelColor(i, COLOR_BELL_ACTIVE); // Kelly Green
+      strip.setPixelColor(i, COLOR_BELL_ACTIVE);  // Kelly Green
     } 
     else if (passing_prev != -1 && i == passing_prev) {
       strip.setPixelColor(i, blink_state ? COLOR_BELL_PAST : COLOR_OFF);
@@ -330,14 +338,14 @@ void loop() {
       strip.setPixelColor(i, blink_state ? COLOR_BELL_ACTIVE : COLOR_OFF);
     }
     else if (now_epoch >= bells[i].end_epoch) {
-      strip.setPixelColor(i, COLOR_BELL_PAST);   // Dim Slate Accent
+      strip.setPixelColor(i, COLOR_BELL_PAST);    // Soft Dedicated White
     }
     else {
-      strip.setPixelColor(i, COLOR_BELL_FUTURE); // Electric Cyan
+      strip.setPixelColor(i, COLOR_BELL_FUTURE);  // Electric Cyan
     }
   }
 
-  // --- PRIORITY ERROR OVERLAYS FOR LED 1 ---
+  // --- DEDICATED SYSTEM STATUS LED (LED 12 / INDEX 11) ---
   if (WiFi.status() != WL_CONNECTED) {
     strip.setPixelColor(STATUS_LED_INDEX, blink_state ? COLOR_ERR_WIFI : COLOR_OFF);
   } 
@@ -352,10 +360,12 @@ void loop() {
   } 
   else if (is_outside_school_day) {
     float sine_val = (sin(millis() * 0.002) + 1.0) / 2.0;
-    uint8_t r = (uint8_t)(sine_val * 0.0);
-    uint8_t g = (uint8_t)(sine_val * 138.0); // Modulated #008A00
-    uint8_t b = (uint8_t)(sine_val * 0.0);
-    strip.setPixelColor(STATUS_LED_INDEX, strip.Color(r, g, b));
+    uint8_t g = (uint8_t)(sine_val * 138.0); // Modulated Deep Green (#008A00)
+    strip.setPixelColor(STATUS_LED_INDEX, strip.Color(0, g, 0, 0));
+  } 
+  else {
+    // School Hours & All Systems Healthy
+    strip.setPixelColor(STATUS_LED_INDEX, COLOR_STATUS_HEALTHY);
   }
 
   strip.show();
